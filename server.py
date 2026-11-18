@@ -2,6 +2,7 @@ import re
 
 import uvicorn
 from mcp.server.mcpserver import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.datastructures import Headers
 from starlette.responses import PlainTextResponse
 
@@ -10,6 +11,8 @@ mcp = server.streamable_http_app(
     stateless_http=True,
     json_response=True,
     max_request_body_size=64 * 1024,
+    # The ASGI entry point validates Host and Origin for the Tailscale URL.
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 local_host = re.compile(r"(?:localhost|127\.0\.0\.1)(?::[0-9]+)?")
 tailscale_host = re.compile(r"email-mcp\.[a-z0-9-]+\.ts\.net(?::443)?")
