@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"regexp"
 	"strings"
@@ -56,6 +57,11 @@ type messageSummary struct {
 
 type recentMessages struct {
 	Since    time.Time        `json:"since"`
+	Messages []messageSummary `json:"messages"`
+}
+
+type addressedMessages struct {
+	Address  string           `json:"address"`
 	Messages []messageSummary `json:"messages"`
 }
 
@@ -193,7 +199,37 @@ func (c *jmapClient) call(ctx context.Context, endpoint string, calls ...jmapCal
 func (c *jmapClient) recent(ctx context.Context, now time.Time) (recentMessages, error) {
 	// JMAP timestamps have second precision and the upper bound is exclusive.
 	until := now.UTC().Truncate(time.Second).Add(time.Second)
-	result := recentMessages{Since: until.Add(-time.Hour), Messages: []messageSummary{}}
+	since := until.Add(-time.Hour)
+	messages, err := c.listMessages(ctx, map[string]any{"after": since, "before": until}, nil, 0)
+	return recentMessages{Since: since, Messages: messages}, err
+}
+
+func (c *jmapClient) toAddress(ctx context.Context, address string, all bool) (addressedMessages, error) {
+	recipient, err := mail.ParseAddress(strings.TrimSpace(address))
+	if err != nil {
+		return addressedMessages{}, errors.New("provide one valid recipient email address")
+	}
+	limit := 5
+	if all {
+		limit = 0
+	}
+	// Compare complete addresses in the parsed To and Cc headers.
+	matches := func(message messageSummary) bool {
+		for _, recipients := range [][]emailAddress{message.To, message.Cc} {
+			for _, entry := range recipients {
+				if strings.EqualFold(entry.Email, recipient.Address) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	messages, err := c.listMessages(ctx, nil, matches, limit)
+	return addressedMessages{Address: recipient.Address, Messages: messages}, err
+}
+
+func (c *jmapClient) listMessages(ctx context.Context, filter map[string]any, matches func(messageSummary) bool, maxResults int) ([]messageSummary, error) {
+	result := []messageSummary{}
 	session, err := c.session(ctx)
 	if err != nil {
 		return result, err
@@ -205,9 +241,11 @@ func (c *jmapClient) recent(ctx context.Context, now time.Time) (recentMessages,
 	account := session.PrimaryAccounts[mailCapability]
 	query := map[string]any{
 		"accountId": account,
-		"filter":    map[string]any{"after": result.Since, "before": until},
 		"sort":      []map[string]any{{"property": "receivedAt", "isAscending": false}},
 		"limit":     limit,
+	}
+	if filter != nil {
+		query["filter"] = filter
 	}
 	get := map[string]any{
 		"accountId":  account,
@@ -240,8 +278,11 @@ func (c *jmapClient) recent(ctx context.Context, now time.Time) (recentMessages,
 			byID[message.ID] = message
 		}
 		for _, id := range found.IDs {
-			if message, ok := byID[id]; ok {
-				result.Messages = append(result.Messages, message)
+			if message, ok := byID[id]; ok && (matches == nil || matches(message)) {
+				result = append(result, message)
+				if maxResults > 0 && len(result) == maxResults {
+					return result, nil
+				}
 			}
 		}
 		if len(found.IDs) == 0 {
@@ -271,7 +312,7 @@ type jmapBodyValue struct {
 func (c *jmapClient) body(ctx context.Context, id string) (messageBody, error) {
 	result := messageBody{ID: id, Parts: []bodyPart{}}
 	if !jmapID.MatchString(id) {
-		return result, errors.New("provide a valid message ID from list_recent_messages")
+		return result, errors.New("provide a valid message ID from a message listing tool")
 	}
 	session, err := c.session(ctx)
 	if err != nil {

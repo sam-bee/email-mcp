@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +14,16 @@ import (
 )
 
 func TestMailTools(t *testing.T) {
+	const recipient = "signup+test@nightwatch-research.co.uk"
+	addressPages := map[string]messageSummary{
+		"":      {ID: "decoy", To: []emailAddress{{Name: recipient, Email: "other-" + recipient}}},
+		"decoy": {ID: "six", To: []emailAddress{{Email: strings.ToUpper(recipient)}}},
+		"six":   {ID: "five", Cc: []emailAddress{{Email: recipient}}},
+		"five":  {ID: "four", To: []emailAddress{{Email: recipient}}},
+		"four":  {ID: "three", To: []emailAddress{{Email: recipient}}},
+		"three": {ID: "two", To: []emailAddress{{Email: recipient}}},
+		"two":   {ID: "one", To: []emailAddress{{Email: recipient}}},
+	}
 	var jmap *httptest.Server
 	jmap = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-key" {
@@ -45,11 +57,24 @@ func TestMailTools(t *testing.T) {
 		if err := json.Unmarshal(req.MethodCalls[0][1], &query); err != nil {
 			t.Error(err)
 		}
-		if query.Filter.Before.Sub(query.Filter.After) != time.Hour {
-			t.Errorf("expected a one-hour query window, got %+v", query.Filter)
-		}
 		if query.Anchor != "" && query.AnchorOffset != 1 {
 			t.Errorf("expected pagination to continue after the anchor, got %+v", query)
+		}
+		if query.Filter.After.IsZero() {
+			ids := []string{}
+			messages := []messageSummary{}
+			if item, ok := addressPages[query.Anchor]; ok {
+				ids = append(ids, item.ID)
+				messages = append(messages, item)
+			}
+			json.NewEncoder(w).Encode(map[string]any{"methodResponses": [][3]any{
+				{"Email/query", map[string]any{"ids": ids}, "query"},
+				{"Email/get", map[string]any{"list": messages}, "summaries"},
+			}})
+			return
+		}
+		if query.Filter.Before.Sub(query.Filter.After) != time.Hour {
+			t.Errorf("expected a one-hour query window, got %+v", query.Filter)
 		}
 		switch query.Anchor {
 		case "":
@@ -92,6 +117,31 @@ func TestMailTools(t *testing.T) {
 	decodeToolResult(t, result, err, &body)
 	if len(body.Parts) != 2 || body.Parts[0].Value != "Code 123456" || body.Parts[1].Value != "<b>123456</b>" {
 		t.Fatalf("unexpected body %+v", body)
+	}
+
+	if info := session.InitializeResult(); !strings.Contains(info.Instructions, "catch-all domain") ||
+		!strings.Contains(info.Instructions, "nightwatch-research.co.uk") {
+		t.Fatalf("missing catch-all instructions: %q", info.Instructions)
+	}
+	want := []string{"six", "five", "four", "three", "two", "one"}
+	for _, tc := range []struct {
+		args map[string]any
+		want []string
+	}{
+		{map[string]any{"address": " " + strings.ToUpper(recipient) + " "}, want[:5]},
+		{map[string]any{"address": recipient, "all": true}, want},
+		{map[string]any{"address": "unused@nightwatch-research.co.uk"}, []string{}},
+	} {
+		result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "list_messages_to_address", Arguments: tc.args})
+		var addressed addressedMessages
+		decodeToolResult(t, result, err, &addressed)
+		ids := make([]string, 0, len(addressed.Messages))
+		for _, message := range addressed.Messages {
+			ids = append(ids, message.ID)
+		}
+		if !slices.Equal(ids, tc.want) {
+			t.Errorf("address lookup with %v returned %v, want %v", tc.args, ids, tc.want)
+		}
 	}
 }
 

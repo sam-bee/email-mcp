@@ -3,9 +3,14 @@
 A Go MCP server that reads the Nightwatch agent mailbox over Stalwart JMAP.
 The Streamable HTTP endpoint is `/mcp`.
 
+Use any unassigned address at `nightwatch-research.co.uk` for a signup or a
+test. Stalwart delivers it to the shared agent mailbox. Use the full address
+to find matching messages, then pass a message ID to `get_message_body`.
+
 | Tool | Arguments | Result |
 | --- | --- | --- |
 | `list_recent_messages` | None | Messages received in the last hour, newest first, with IDs, sender and recipient headers, subjects and timestamps |
+| `list_messages_to_address` | `address`, optional `all` (defaults to `false`) | Exact To or Cc matches, newest first. The default returns five and `all: true` searches the full mailbox history |
 | `get_message_body` | `id` | Plain-text and HTML body parts for the message, with truncation or encoding flags when reported by JMAP |
 
 The list covers the entire agent mailbox, including Junk. Body parts are
